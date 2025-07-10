@@ -68,7 +68,7 @@ roslaunch hector_slam.launch
 
 | SNAKE\_LINE 模式     | SNAKE\_CAR 模式     | SNAKE\_SCAN 模式     |
 | ------------------ | ----------------- | ------------------ |
-| ![](docs/_DSC4436.jpg) | ![](docs/_DSC4493.jpg) | ![](docs/_DSC4537.jpg) |
+| ![](docs/_DSC4436.JPG) | ![](docs/_DSC4493.JPG) | ![](docs/_DSC4537.JPG) |
 
 ## 📌 TODO
 
