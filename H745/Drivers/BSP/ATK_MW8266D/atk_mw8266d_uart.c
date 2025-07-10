@@ -1,0 +1,165 @@
+/**
+ ****************************************************************************************************
+ * @file        atk_mw8266d_uart.c
+ * @author      正点原子团队(ALIENTEK)
+ * @version     V1.0
+ * @date        2022-06-21
+ * @brief       ATK-MW8266D模块UART接口驱动代码
+ * @license     Copyright (c) 2020-2032, 广州市星翼电子科技有限公司
+ ****************************************************************************************************
+ * @attention
+ *
+ * 实验平台:正点原子 阿波罗 H743开发板
+ * 在线视频:www.yuanzige.com
+ * 技术论坛:www.openedv.com
+ * 公司网址:www.alientek.com
+ * 购买地址:openedv.taobao.com
+ *
+ ****************************************************************************************************
+ */
+
+#include "./BSP/ATK_MW8266D/atk_mw8266d_uart.h"
+#include "./SYSTEM/usart/usart.h"
+#include <stdarg.h>
+#include <stdio.h>
+#include <string.h>
+
+int IQR_flag = 0; /* UART中断标志位 */
+int uart_rx_irq_flag = 0;
+int finish_flag = 0; /* 帧接收完成标志位 */
+
+atk_uart_state_t g_atk_uart_state = ATK_UART_WAIT_READY; // 初始状态
+
+
+
+uint8_t atk_rx_buffer[ATK_MW8266D_UART_RX_BUF_SIZE]; /* ATK-MW8266D UART接收缓冲区 */
+
+static UART_HandleTypeDef g_uart_handle;                    /* ATK-MW8266D UART */
+struct
+{
+    uint8_t buf[ATK_MW8266D_UART_RX_BUF_SIZE];              /* 帧接收缓冲 */
+    struct
+    {
+        uint16_t len    : 15;                               /* 帧接收长度，sta[14:0] */
+        uint16_t finsh  : 1;                                /* 帧接收完成标志，sta[15] */
+    } sta;                                                  /* 帧状态信息 */
+} g_uart_rx_frame = {0};                                    /* ATK-MW8266D UART接收帧缓冲信息结构体 */
+static uint8_t g_uart_tx_buf[ATK_MW8266D_UART_TX_BUF_SIZE]; /* ATK-MW8266D UART发送缓冲 */
+
+/**
+ * @brief       ATK-MW8266D UART printf
+ * @param       fmt: 待打印的数据
+ * @retval      无
+ */
+void atk_mw8266d_uart_printf(char *fmt, ...)
+{
+    va_list ap;
+    uint16_t len;
+    
+    va_start(ap, fmt);
+    vsprintf((char *)g_uart_tx_buf, fmt, ap);
+    va_end(ap);
+    
+    len = strlen((const char *)g_uart_tx_buf);
+    HAL_UART_Transmit(&g_uart_handle, g_uart_tx_buf, len, HAL_MAX_DELAY);
+}
+
+/**
+ * @brief       ATK-MW8266D UART重新开始接收数据
+ * @param       无
+ * @retval      无
+ */
+void atk_mw8266d_uart_rx_restart(void)
+{
+    g_uart_rx_frame.sta.len     = 0;
+    g_uart_rx_frame.sta.finsh   = 0;
+}
+
+/**
+ * @brief       获取ATK-MW8266D UART接收到的一帧数据
+ * @param       无
+ * @retval      NULL: 未接收到一帧数据
+ *              其他: 接收到的一帧数据
+ */
+uint8_t *atk_mw8266d_uart_rx_get_frame(void)
+{
+    if (g_uart_rx_frame.sta.finsh == 1)
+    {
+        g_uart_rx_frame.buf[g_uart_rx_frame.sta.len] = '\0';
+        return g_uart_rx_frame.buf;
+    }
+    else
+    {
+        return NULL;
+    }
+}
+
+/**
+ * @brief       获取ATK-MW8266D UART接收到的一帧数据的长度
+ * @param       无
+ * @retval      0   : 未接收到一帧数据
+ *              其他: 接收到的一帧数据的长度
+ */
+uint16_t atk_mw8266d_uart_rx_get_frame_len(void)
+{
+    if (g_uart_rx_frame.sta.finsh == 1)
+    {
+        return g_uart_rx_frame.sta.len;
+    }
+    else
+    {
+        return 0;
+    }
+}
+
+/**
+ * @brief       ATK-MW8266D UART初始化
+ * @param       baudrate: UART通讯波特率
+ * @retval      无
+ */
+void atk_mw8266d_uart_init(uint32_t baudrate)
+{
+    g_uart_handle.Instance          = ATK_MW8266D_UART_INTERFACE;   /* ATK-MW8266D UART */
+    g_uart_handle.Init.BaudRate     = baudrate;                     /* 波特率 */
+    g_uart_handle.Init.WordLength   = UART_WORDLENGTH_8B;           /* 数据位 */
+    g_uart_handle.Init.StopBits     = UART_STOPBITS_1;              /* 停止位 */
+    g_uart_handle.Init.Parity       = UART_PARITY_NONE;             /* 校验位 */
+    g_uart_handle.Init.Mode         = UART_MODE_TX_RX;              /* 收发模式 */
+    g_uart_handle.Init.HwFlowCtl    = UART_HWCONTROL_NONE;          /* 无硬件流控 */
+    g_uart_handle.Init.OverSampling = UART_OVERSAMPLING_16;         /* 过采样 */
+
+
+    HAL_UART_Init(&g_uart_handle);                                  /* 使能ATK-MW8266D UART
+                                                                     * HAL_UART_Init()会调用函数HAL_UART_MspInit()
+                                                                     * 该函数定义在文件usart.c中
+                                                                     */
+
+    HAL_UART_Receive_IT(&g_uart_handle, atk_rx_buffer, 1); /* 启动UART接收中断 */
+}
+
+/**
+ * @brief       ATK-MW8266D UART中断回调函数
+ * @param       无
+ * @retval      无
+ */
+void ATK_MW8266D_UART_IRQHandler(void)
+{
+    HAL_UART_IRQHandler(&g_uart_handle); // 保证HAL状态机正常
+
+    if (__HAL_UART_GET_FLAG(&g_uart_handle, UART_FLAG_IDLE) != RESET) // UART总线空闲中断
+    {
+        __HAL_UART_CLEAR_IDLEFLAG(&g_uart_handle);  // 清除IDLE标志
+
+        if (g_uart_rx_frame.sta.len > 0 && g_uart_rx_frame.sta.len < ATK_MW8266D_UART_RX_BUF_SIZE) {
+            g_uart_rx_frame.sta.finsh = 1;   // 标记接收完成
+            finish_flag = 1;
+        } else {
+            g_uart_rx_frame.sta.len = 0;
+            g_uart_rx_frame.sta.finsh = 0;
+        }
+
+        // 重新开启接收1个字节
+        HAL_UART_Receive_IT(&g_uart_handle, atk_rx_buffer, 1);
+    }
+}
+
